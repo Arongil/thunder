@@ -26,6 +26,22 @@ ns_compiled = torch.compile(ns)
 def ns_data_generator(dim, device, dtype=torch.bfloat16):
     return (torch.randn(size=dim, device=device, dtype=dtype), 5, 1e-7)
 
+### Stripped Newton-Schulz
+
+def sns(X):
+    if X.size(0) > X.size(1):
+        X = X.T
+    for _ in range(5):
+        A = X @ X.T
+        B = A @ X
+        X = 2 * X + 3 * B + 5 * A @ B
+    return X
+
+sns_compiled = torch.compile(sns)
+
+def sns_data_generator(dim, device, dtype=torch.bfloat16):
+    return (torch.randn(size=dim, device=device, dtype=dtype),)
+
 ### Symmetric matrix multiplication (symm)
 
 def symm(X):
@@ -88,10 +104,12 @@ if __name__ == "__main__":
     device = torch.device("cuda")
 
     benchmarks = {
-        "Newton-Schulz":             (False, ns, ns_data_generator, 256),
-        "Compiled Newton-Schulz":    (False, ns_compiled, ns_data_generator, 256),
-        "Symmetric Matmul":          (True, symm, symm_data_generator, 2048),
-        "Compiled Symmetric Matmul": (True, symm_compiled, symm_data_generator, 2048),
+        "Newton-Schulz":                   (False, ns, ns_data_generator, 256),
+        "Compiled Newton-Schulz":          (False, ns_compiled, ns_data_generator, 256),
+        "Stripped Newton-Schulz":          (False, sns, sns_data_generator, 256),
+        "Compiled Stripped Newton-Schulz": (False, sns_compiled, sns_data_generator, 256),
+        "Symmetric Matmul":                (True, symm, symm_data_generator, 2048),
+        "Compiled Symmetric Matmul":       (True, symm_compiled, symm_data_generator, 2048),
     }
 
     dims = [
@@ -102,7 +120,7 @@ if __name__ == "__main__":
         (1024, 4096),
         (4096, 4096),
         (4096, 16384),
-        #(8192, 32768),
+        (8192, 32768),
     ]
 
     for name, (do_benchmark, f, data_generator, iters) in benchmarks.items():
