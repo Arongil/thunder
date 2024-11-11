@@ -2,6 +2,8 @@ import torch
 import time
 import functools
 
+torch.backends.cudnn.benchmark = True
+
 #####################################
 ## Kernels
 
@@ -54,6 +56,16 @@ symm_compiled = torch.compile(symm)
 def symm_data_generator(dim, device, dtype=torch.bfloat16):
     return (torch.randn(size=dim, device=device, dtype=dtype),)
 
+### Symmetric-general matrix multiplication (sygm)
+
+def symg(X, Y):
+    return X @ Y.T
+
+symg_compiled = torch.compile(symg)
+
+def symg_data_generator(dim, device, dtype=torch.bfloat16):
+    return (torch.randn(size=dim, device=device, dtype=dtype), torch.randn(size=dim, device=device, dtype=dtype))
+
 #####################################
 ## Benchmarking
 
@@ -104,12 +116,14 @@ if __name__ == "__main__":
     device = torch.device("cuda")
 
     benchmarks = {
-        "Newton-Schulz":                   (False, ns, ns_data_generator, 256),
-        "Compiled Newton-Schulz":          (False, ns_compiled, ns_data_generator, 256),
-        "Stripped Newton-Schulz":          (False, sns, sns_data_generator, 256),
-        "Compiled Stripped Newton-Schulz": (False, sns_compiled, sns_data_generator, 256),
-        "Symmetric Matmul":                (True, symm, symm_data_generator, 2048),
-        "Compiled Symmetric Matmul":       (True, symm_compiled, symm_data_generator, 2048),
+        "Newton-Schulz":                     (False, ns, ns_data_generator, 256),
+        "Compiled Newton-Schulz":            (False, ns_compiled, ns_data_generator, 256),
+        "Stripped Newton-Schulz":            (False, sns, sns_data_generator, 256),
+        "Compiled Stripped Newton-Schulz":   (True, sns_compiled, sns_data_generator, 256),
+        "Symmetric Matmul":                  (False, symm, symm_data_generator, 2048),
+        "Compiled Symmetric Matmul":         (True, symm_compiled, symm_data_generator, 2048),
+        "Symmetric-General Matmul":          (False, symg, symg_data_generator, 2048),
+        "Compiled Symmetric-General Matmul": (True, symg_compiled, symg_data_generator, 2048),
     }
 
     dims = [
