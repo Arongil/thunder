@@ -2,6 +2,7 @@ import torch
 import time
 import functools
 import ctypes
+import atexit
 
 torch.backends.cudnn.benchmark = True
 
@@ -78,25 +79,33 @@ cublasHandle_t = ctypes.c_void_p
 CUBLAS_FILL_MODE_LOWER = 1
 CUBLAS_OP_N = 0
 
-def create_cublas_handle():
-    handle = cublasHandle_t()
-    status = cublas.cublasCreate_v2(ctypes.byref(handle))
-    if status != 0:
-        raise RuntimeError(f"cuBLAS initialization failed with status {status}")
-    return handle
+# Global handle
+_cublas_handle = None
 
-def destroy_cublas_handle(handle):
-    if handle:
-        cublas.cublasDestroy_v2(handle)
+def get_cublas_handle():
+    global _cublas_handle
+    if _cublas_handle is None:
+        _cublas_handle = cublasHandle_t()
+        status = cublas.cublasCreate_v2(ctypes.byref(_cublas_handle))
+        if status != 0:
+            raise RuntimeError(f"cuBLAS initialization failed with status {status}")
+        # Register cleanup on program exit
+        atexit.register(destroy_cublas_handle)
+    return _cublas_handle
 
-def syrk(X):
+def destroy_cublas_handle():
+    global _cublas_handle
+    if _cublas_handle is not None:
+        cublas.cublasDestroy_v2(_cublas_handle)
+        _cublas_handle = None
+
+def syrk(X, return_C=False):
     """Compute X @ X.T using cuBLAS SYRK"""
-    # Convert to column-major format for cuBLAS
-    X_t = X.t().contiguous()
+    """Assume X is already in column-major format, X = X.t().contiguous()"""
 
     # Get dimensions
-    n = X.size(0)
-    k = X.size(1)
+    k = X.size(0)
+    n = X.size(1)
 
     # Initialize output
     C = torch.zeros(n, n, device=X.device, dtype=X.dtype)
@@ -106,42 +115,37 @@ def syrk(X):
     beta = ctypes.c_float(0.0)
 
     # Get pointers to GPU memory
-    X_ptr = ctypes.c_void_p(X_t.data_ptr())
+    X_ptr = ctypes.c_void_p(X.data_ptr())
     C_ptr = ctypes.c_void_p(C.data_ptr())
 
     # Initialize cuBLAS
-    handle = create_cublas_handle()
+    handle = get_cublas_handle()
 
-    try:
-        status = cublas.cublasSsyrk_v2(
-            handle,
-            CUBLAS_FILL_MODE_LOWER,  # Fill lower triangle
-            CUBLAS_OP_N,             # No transpose (we pre-transposed)
-            n,                       # rows/cols in C
-            k,                       # cols in original X
-            ctypes.byref(alpha),
-            X_ptr,                   # Input matrix (transposed)
-            n,                       # lda: leading dimension of X must be ≥ n
-            ctypes.byref(beta),
-            C_ptr,
-            n                        # ldc: leading dimension of C
-        )
+    status = cublas.cublasSsyrk_v2(
+        handle,
+        CUBLAS_FILL_MODE_LOWER,  # Fill lower triangle
+        CUBLAS_OP_N,             # No transpose (we pre-transposed)
+        n,                       # rows/cols in C
+        k,                       # cols in original X
+        ctypes.byref(alpha),
+        X_ptr,                   # Input matrix (transposed)
+        n,                       # lda: leading dimension of X must be ≥ n
+        ctypes.byref(beta),
+        C_ptr,
+        n                        # ldc: leading dimension of C
+    )
 
-        if status != 0:
-            raise RuntimeError(f"cuBLAS SYRK failed with status {status}")
+    if status != 0:
+        raise RuntimeError(f"cuBLAS SYRK failed with status {status}")
 
+    if return_C:
         # Fill upper triangle by reflecting lower triangle
-        C = C + torch.tril(C, -1).t()
-
-        return C
-
-    finally:
-        destroy_cublas_handle(handle)
+        return C + torch.tril(C, -1).t()
 
 syrk_compiled = torch.compile(syrk)
 
 def syrk_data_generator(dim, device, dtype=torch.bfloat16):
-    return (torch.randn(size=dim, device=device, dtype=dtype),)
+    return (torch.randn(size=dim, device=device, dtype=dtype).t().contiguous(),)
 
 def test_syrk_correctness():
     """Verify SYRK implementation against various test cases"""
@@ -167,7 +171,7 @@ def test_syrk_correctness():
 
     for i, X in enumerate(test_cases):
         # Compute with our SYRK implementation
-        result = syrk(X)
+        result = syrk(X.t().contiguous(), return_C=True)
         # Compute ground truth with PyTorch
         expected = X @ X.t()
 
@@ -238,12 +242,12 @@ if __name__ == "__main__":
         "Compiled Newton-Schulz":            (False, ns_compiled, ns_data_generator, 256),
         "Stripped Newton-Schulz":            (False, sns, sns_data_generator, 256),
         "Compiled Stripped Newton-Schulz":   (False, sns_compiled, sns_data_generator, 256),
-        "Symmetric Matmul":                  (False, symm, symm_data_generator, 2048),
-        "Compiled Symmetric Matmul":         (True, symm_compiled, symm_data_generator, 2048),
+        "Symmetric Matmul":                  (True, symm, symm_data_generator, 2048),
+        "Compiled Symmetric Matmul":         (False, symm_compiled, symm_data_generator, 2048),
         "Symmetric-General Matmul":          (False, symg, symg_data_generator, 2048),
         "Compiled Symmetric-General Matmul": (False, symg_compiled, symg_data_generator, 2048),
         "SYRK":                              (True, syrk, syrk_data_generator, 2048),
-        "Compiled SYRK":                     (True, syrk_compiled, syrk_data_generator, 2048),
+        "Compiled SYRK":                     (False, syrk_compiled, syrk_data_generator, 2048),
     }
 
     dims = [
@@ -251,8 +255,8 @@ if __name__ == "__main__":
         (256, 256),
         (256, 1024),
         (1024, 1024),
-        (1024, 4096),
-        (4096, 4096),
+        #(1024, 4096),
+        #(4096, 4096),
         #(4096, 16384),
         #(8192, 32768),
     ]
@@ -266,4 +270,3 @@ if __name__ == "__main__":
     for name, (do_benchmark, f, data_generator, iters) in benchmarks.items():
         if do_benchmark:
             pretty_print_benchmark(name, f, data_generator, dims, device, iters)
-
