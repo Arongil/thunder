@@ -82,6 +82,7 @@ struct matmul_template {
         __device__ static void finish(consumer_finish_args<layout> args) {
             warpgroup::store(reinterpret_cast<wide_tile&>(args.finish.c[warpgroup::groupid()]), args.state.accum);
             warpgroup::sync(warpgroup::groupid()+4);
+			printf("Hello from in the kernel! Storing results.");
             if(warpgroup::warpid() == 0) for(int i = 0; i < N_BLOCK; i++) {
                 tma::store_async(args.globals.C, args.finish.c[warpgroup::groupid()][i],
                                              {args.common.coord.x, args.common.coord.y+i});
@@ -197,12 +198,23 @@ void matmul(bf16 *d_A, bf16 *d_B, bf16 *d_C, size_t M, size_t N, size_t K, dim3 
     prototype::lcf::kernel<mmt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(G);
 }
 
-using mmt = typename ::symmul_template<2,4,8>;
+using mmt = typename ::matmul_template<2,4,8>;
 using globals = typename mmt::layout::globals;
+
+__global__ void one_kernel(const globals g) {
+	g.C[{0, 0, 0, 0}] = g.A[{0, 0, 0, 0}];
+}
+
 void symmul4096_4096(globals g) {
-    dim3 grid(mmt::grid(4096, 4096, 4096));
+	size_t N = 4096;
+	size_t K = 4096;
+    dim3 grid(mmt::grid(N, N, K));
     dim3 block(prototype::detail::NUM_THREADS_v<mmt>);
+	//printf("\ngrid is (%d, %d, %d)\n", grid.x, grid.y, grid.z);
+	//one_kernel<<<grid, block>>>(g);
+	printf("JUST BEFORE ENTERING LCF KERNEL!");
     prototype::lcf::kernel<mmt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(g);
+	//matmul<mmt>(g.A, g.B, g.C, N, N, K, grid, block);
 }
 
 /*
