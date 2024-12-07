@@ -1,5 +1,6 @@
 #include "kittens.cuh"
 #include "prototype.cuh"
+#include "pyutils/pyutils.cuh"
 
 using namespace kittens;
 using namespace kittens::prototype;
@@ -170,11 +171,7 @@ struct symmul_template {
     };
 };
 
-constexpr bool NCU = false;
-#include <iostream>
-#include <random>
 #include <cuda_bf16.h>
-#include <omp.h>
 
 void cpu_gemm(float* a, float* b, float* c, int M, int N, int K) {
     #pragma omp parallel for collapse(2) // otherwise the CPU version takes for everrrrrr
@@ -190,7 +187,7 @@ void cpu_gemm(float* a, float* b, float* c, int M, int N, int K) {
 }
 
 template<typename mmt>
-void inner_run(bf16 *d_A, bf16 *d_B, bf16 *d_C, size_t M, size_t N, size_t K, dim3 grid, dim3 block) {
+void matmul(bf16 *d_A, bf16 *d_B, bf16 *d_C, size_t M, size_t N, size_t K, dim3 grid, dim3 block) {
     using global_layout = typename mmt::layout::global_layout;
     using globals  = typename mmt::layout::globals;
     global_layout Ag{d_A, nullptr, nullptr, M, K};
@@ -200,189 +197,24 @@ void inner_run(bf16 *d_A, bf16 *d_B, bf16 *d_C, size_t M, size_t N, size_t K, di
     prototype::lcf::kernel<mmt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(G);
 }
 
-template<typename mmt>
-int run_benchmark(size_t M, size_t N, size_t K) {
-    cudaError_t cudaStatus;
-
-    std::cout << "--------------------  M=" << M << " N=" << N << " K=" << K << "  --------------------\n";
-    std::cout << "Block size: " << mmt::M_BLOCK*64 << "x" << mmt::N_BLOCK*64 << "\n";
-
-    // Allocate host memory
-    float *h_A = new float[M * K];
-    float *h_B = new float[K * N];
-    float *h_C = new float[M * N];
-    float *h_C_ref = new float[M * N];
-
-    std::cout << "Allocated host memory" << std::endl;
-
-    // Initialize random number generator
-    std::random_device rd;
-    std::mt19937 gen(42);
-    std::uniform_real_distribution<> dis(-0.5, 0.5);
-
-    // Initialize matrices with random values
-    for (int i = 0; i < M * K; ++i) h_A[i] = dis(gen);
-    for (int i = 0; i < K * N; ++i) h_B[i] = dis(gen);
-
-    std::cout << "Initialized matrices" << std::endl;
-
-    // Perform CPU matrix multiplication for reference
-    if(true) cpu_gemm(h_A, h_B, h_C_ref, M, N, K);
-
-    std::cout << "Performed CPU matrix multiplication" << std::endl;
-
-    // Allocate device memory
-    __nv_bfloat16 *d_A, *d_B, *d_C;
-    cudaMalloc(&d_A, M*K*sizeof(__nv_bfloat16));
-    cudaMalloc(&d_B, K*N*sizeof(__nv_bfloat16));
-    cudaMalloc(&d_C, M*N*sizeof(__nv_bfloat16));
-
-    // Check for CUDA errors
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        std::cerr << "CUDA error: " << cudaGetErrorString(cudaStatus) << std::endl;
-        // Optionally, you might want to exit the program or handle the error in some way
-        return -1;
-    }
-
-    std::cout << "Allocated device memory" << std::endl;
-
-    // Convert to __nv_bfloat16 and copy to device
-    __nv_bfloat16 *h_A_bf16 = new __nv_bfloat16[M * K];
-    __nv_bfloat16 *h_B_bf16 = new __nv_bfloat16[K * N];
-    for (int i = 0; i < M * K; ++i) h_A_bf16[i] = __float2bfloat16(h_A[i]);
-    for (int i = 0; i < K * N; ++i) h_B_bf16[i] = __float2bfloat16(h_B[i]);
-
-    cudaMemcpy(d_A, h_A_bf16, M*K*2, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, h_B_bf16, K*N*2, cudaMemcpyHostToDevice);
-
-    std::cout << "Copied matrices to device" << std::endl;
-
-    unsigned long mem_size = MAX_SHARED_MEMORY - 1024;
-    cudaFuncSetAttribute(prototype::lcf::kernel<mmt>, cudaFuncAttributeMaxDynamicSharedMemorySize, mem_size);
-
-    // Launch kernel
-    dim3 grid(mmt::grid(M, N, K));
-    dim3 block(kittens::prototype::detail::NUM_THREADS_v<mmt>);
-    std::cout << "Launching warmup kernel with grid (" << grid.x << ", " << grid.y << "), block (" << block.x << ")\n";
-    for(int i = 0; i < (NCU ? 0 : 2); i++) { // warmup
-        inner_run<mmt>(d_A, d_B, d_C, M, N, K, grid, block);
-    }
-
-    // Start timing
-    cudaDeviceSynchronize();
-    std::cout << "Launching kernel with grid (" << grid.x << ", " << grid.y << "), block (" << block.x << ")\n";
-    auto start = std::chrono::high_resolution_clock::now();
-
-    constexpr int ITERS = (NCU ? 1 : 10);
-    for(int i = 0; i < ITERS; i++) {
-        inner_run<mmt>(d_A, d_B, d_C, M, N, K, grid, block);
-    }
-    cudaDeviceSynchronize();
-
-    // End timing
-    auto end = std::chrono::high_resolution_clock::now();
-
-    // Calculate duration
-    std::chrono::duration<double> diff = end - start;
-    double useconds = diff.count() * 1e6 / ITERS;
-
-    // Calculate TFLOPs
-    double flops = double(2.0) * M * N * K; // 2 FLOPs per multiply-add
-    double tflops = (flops / useconds) / 1e6;
-
-    std::cout << "Avg Kernel execution time: " << useconds << " us\n";
-    std::cout << "Achieved performance: " << tflops << " TFLOPs\n";
-    
-    // Check for CUDA errors
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        std::cerr << "CUDA error: " << cudaGetErrorString(cudaStatus) << std::endl;
-        // Optionally, you might want to exit the program or handle the error in some way
-        return -1;
-    }
-
-    // Copy result back to host
-    __nv_bfloat16 *h_C_bf16 = new __nv_bfloat16[M * N];
-    cudaMemcpy(h_C_bf16, d_C, M*N*2, cudaMemcpyDeviceToHost);
-
-    std::cout << "Copied result back to host" << std::endl;
-
-    // Convert result back to float for comparison
-    for (int i = 0; i < M * N; ++i) h_C[i] = __bfloat162float(h_C_bf16[i]);
-
-    std::cout << "Converted result back to float" << std::endl;
-
-    // Check result
-    float max_error = 0.0f;
-    int error_count = 0;
-    for (int i = 0; i < M * N; ++i) {
-        float error = std::abs(h_C[i] - h_C_ref[i]);
-        if(error > 1.0) { // large because of bf16 vs fp32 numerics
-            if(error_count < 20) std::cout << "Error at row " << i / N << " col " << i % N << ": " << h_C[i] << " != " << h_C_ref[i] << " (ref)" << std::endl;
-            else if(error_count == 21) std::cout << "Too many errors to show them all.\n";
-            error_count++;
-        }
-        max_error = std::max(max_error, error);
-    }
-
-    std::cout << "Max error: " << max_error << std::endl;
-    std::cout << "Error count: " << error_count << std::endl;
-
-    // Clean up
-    delete[] h_A;
-    delete[] h_B;
-    delete[] h_C;
-    delete[] h_C_ref;
-    delete[] h_A_bf16;
-    delete[] h_B_bf16;
-    delete[] h_C_bf16;
-    cudaFree(d_A);
-    cudaFree(d_B);
-    cudaFree(d_C);
-
-    return 0;
+using mmt = typename ::symmul_template<2,4,8>;
+using globals = typename mmt::layout::globals;
+void symmul4096_4096(globals g) {
+    dim3 grid(mmt::grid(4096, 4096, 4096));
+    dim3 block(prototype::detail::NUM_THREADS_v<mmt>);
+    prototype::lcf::kernel<mmt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(g);
 }
 
-int main() {
-    // int Cblocks = 22, Rblocks = 24;
-    // int Cblocks192 = 20, Rblocks192 = 16;
-    // run_benchmark<matmul_template<4>>(4096, 4096, 4096, Rblocks, Cblocks, Rblocks192, Cblocks192);
-    // run_benchmark<matmul_template<8>>(4096, 4096, 4096, Rblocks, Cblocks, Rblocks192, Cblocks192);
-    // run_benchmark<matmul_template<12>>(4096, 4096, 4096, Rblocks, Cblocks, Rblocks192, Cblocks192);
-    int N;
-    N = 2048;//4096;
-    run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    std::cout << "\n~~~ now testing symmetric matmul ~~~\n";
-    run_benchmark<symmul_template<2,4,8>>(N, N, N);
-    // N = 3072;
-    // run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    // run_benchmark<matmul_template<3,3,8>>(N, N, N);
-    // N = 4096;
-    // run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    // N = 6144;
-    // run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    // run_benchmark<matmul_template<3,3,8>>(N, N, N);
-    // N = 8192;
-    // run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    // N = 12288;
-    // run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    // run_benchmark<matmul_template<3,3,8>>(N, N, N);
-    // N = 16384;
-    // run_benchmark<matmul_template<2,4,8>>(N, N, N);
-    // run_benchmark<matmul_template<2,4,12>>(N, N, N);
-    // run_benchmark<matmul_template<3,3,12>>(192*12, 192*11, 8192);
-    // run_benchmark<matmul_template<2,4,11>>(128*22, 256* 6, 8192);
-    // run_benchmark<matmul_template<2,4,1>>(128 * 132, 256, 256);
-    // run_benchmark<matmul_template<2,4,1>>(128 * 133, 256, 256);
-    // run_benchmark<matmul_template<2,4,1>>(16384, 16384, 16384);
-    // run_benchmark<matmul_template<2,4,8>>(16384, 16384, 16384);
-    // run_benchmark<matmul_template<2,4,12>>(16384, 16384, 16384);
-    // run_benchmark<matmul_template<2,4,128>>(16384, 16384, 16384);
-    // run_benchmark<matmul_template<3,3,12>>(192*22, 192*6*2, 8192);
-    // run_benchmark<matmul_template<3,3,12>>(192*22, 192*6*2, 16384);
-    // run_benchmark<matmul_template<2,4,11>>(128*22*2, 256* 6*2, 8192);
-    // run_benchmark<matmul_template<3,3,12>>(192*12*2, 192*11*2, 8192*2);
-    // run_benchmark<matmul_template<2,4,11>>(128*22*2, 256* 6*2, 8192*2);
-    return 0;
+/*
+void symmul4096_16384(globals g) {
+	dim3 grid(mmt::grid(4096, 4096, 16384));
+	dim3 block(prototype::detail::NUM_THREADS_v<mmt>);
+    prototype::lcf::kernel<mmt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(g);
+}
+*/
+
+PYBIND11_MODULE(symmul, m) {
+    m.doc() = "ThunderKittens symmetric matmul module";
+    BIND_FUNCTION(m, "symmul4096_4096", symmul4096_4096, globals, A, B, C);
+//BIND_FUNCTION(m, "symmul4096_16384", symmul4096_16384, globals);
 }
