@@ -4,7 +4,7 @@ import torch
 assert torch.cuda.is_available()
 device = "cuda"
 
-n = 4096
+n = 1024
 dtype = torch.bfloat16
 A = torch.ones((n, n), dtype=dtype, device=device)
 B = torch.ones((n, n), dtype=dtype, device=device)
