@@ -6,8 +6,8 @@ device = "cuda"
 
 n = 4096
 dtype = torch.bfloat16
-A = torch.randn((n, n), dtype=dtype, device=device)
-B = torch.randn((n, n), dtype=dtype, device=device)
+A = torch.eye(n, dtype=dtype, device=device)
+B = torch.eye(n, dtype=dtype, device=device)
 C = torch.zeros((n, n), dtype=dtype, device=device)
 
 symmul.symmul4096_4096(A, B, C)
