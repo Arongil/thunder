@@ -137,18 +137,18 @@ void symmul4096_4096(globals g) {
     dim3 grid(mmt::grid(N, N, K));
     dim3 block(prototype::detail::NUM_THREADS_v<mmt>);
 
-    // Create the layouts with proper constructor arguments
+    // Create the layouts with explicit batch and depth values
     global_layout Ag{g.A.raw_ptr, nullptr, nullptr, N, K};  // batch=1, depth=1, rows=N, cols=K
     global_layout Bg{g.B.raw_ptr, nullptr, nullptr, K, N};  // batch=1, depth=1, rows=K, cols=N
     global_layout Cg{g.C.raw_ptr, nullptr, nullptr, N, N};  // batch=1, depth=1, rows=N, cols=N
 
-    // Print the corrected matrix properties
-    printf("Matrix properties after correction:\n");
-    printf("A: ptr=%p, batch=%d, depth=%d, rows=%d, cols=%d\n", 
+    // Print the matrix properties for debugging
+    printf("Matrix properties:\n");
+    printf("A: ptr=%p, batch=%d, depth=%d, rows=%zu, cols=%zu\n", 
            Ag.raw_ptr, Ag.batch, Ag.depth, Ag.rows, Ag.cols);
-    printf("B: ptr=%p, batch=%d, depth=%d, rows=%d, cols=%d\n", 
+    printf("B: ptr=%p, batch=%d, depth=%d, rows=%zu, cols=%zu\n", 
            Bg.raw_ptr, Bg.batch, Bg.depth, Bg.rows, Bg.cols);
-    printf("C: ptr=%p, batch=%d, depth=%d, rows=%d, cols=%d\n", 
+    printf("C: ptr=%p, batch=%d, depth=%d, rows=%zu, cols=%zu\n", 
            Cg.raw_ptr, Cg.batch, Cg.depth, Cg.rows, Cg.cols);
 
     globals G{Ag, Bg, Cg};
