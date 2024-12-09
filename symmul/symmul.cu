@@ -24,7 +24,7 @@ struct symmul_template {
     static constexpr int NUM_CONSUMER_WARPS=M_BLOCK*4, INPUT_PIPE_STAGES=4, PRODUCER_BARRIER_ARRIVALS=1;
     // Helper functions
     template<bool PERISISTENT_GRID=true> __host__ static inline dim3 grid(int M, int N) {
-        return dim3(PERISISTENT_GRID ? 132 : M*N/(M_BLOCK*N_BLOCK*layout::base_tile::num_elements));
+        return dim3(PERISISTENT_GRID ? 4*132 : M*N/(M_BLOCK*N_BLOCK*layout::base_tile::num_elements));
     }
       // ThunderKittens template functions
     __device__ static inline void common_setup(common_setup_args<layout> args) {
@@ -81,7 +81,6 @@ struct symmul_template {
         __device__ static void setup(consumer_setup_args<layout> args) {
             warpgroup::increase_registers<232>(); // increase registers for consumers
             zero(args.state.accum);
-            zero(args.state.accum_transposed);
         }
         __device__ static void compute(consumer_compute_args<layout> args) {
             warpgroup::mma_AB(
@@ -121,7 +120,6 @@ struct symmul_template {
             }
 
             zero(args.state.accum);
-            zero(args.state.accum_transposed);
             if(laneid() == 0) arrive(args.finish_finished);
         }
     };
