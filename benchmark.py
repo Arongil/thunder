@@ -58,6 +58,38 @@ symm_compiled = torch.compile(symm)
 def symm_data_generator(dim, device, dtype=torch.bfloat16):
     return (torch.randn(size=dim, device=device, dtype=dtype),)
 
+### Custom symmetric matrix multiplication (symm)
+
+import symmul.symmul as symmul
+
+def custom_symm(X, Y, Z):
+    symmul.symmul(X, Y, Z)
+
+custom_symm_compiled = torch.compile(custom_symm)
+
+def custom_symm_data_generator(dim, device, dtype=torch.bfloat16):
+    A = torch.randn(size=dim, device=device, dtype=dtype)
+    return (
+        A,
+        A.T.contiguous(),
+        torch.zeros_like(A),
+    )
+
+### Custom matrix multiplication (matmul)
+
+def custom_matmul(X, Y, Z):
+    symmul.matmul(X, Y, Z)
+
+custom_matmul_compiled = torch.compile(custom_matmul)
+
+def custom_matmul_data_generator(dim, device, dtype=torch.bfloat16):
+    A = torch.randn(size=dim, device=device, dtype=dtype)
+    return (
+        A,
+        A.T.contiguous(),
+        torch.zeros_like(A),
+    )
+
 ### Symmetric-general matrix multiplication (sygm)
 
 def symg(X, Y):
@@ -244,19 +276,23 @@ if __name__ == "__main__":
         "Compiled Stripped Newton-Schulz":   (False, sns_compiled, sns_data_generator, 256),
         "Symmetric Matmul":                  (True, symm, symm_data_generator, 2048),
         "Compiled Symmetric Matmul":         (False, symm_compiled, symm_data_generator, 2048),
-        "Symmetric-General Matmul":          (False, symg, symg_data_generator, 2048),
+        "Symmetric-General Matmul":          (True, symg, symg_data_generator, 2048),
         "Compiled Symmetric-General Matmul": (False, symg_compiled, symg_data_generator, 2048),
-        "SYRK":                              (True, syrk, syrk_data_generator, 2048),
+        "SYRK":                              (False, syrk, syrk_data_generator, 2048),
         "Compiled SYRK":                     (False, syrk_compiled, syrk_data_generator, 2048),
+        "Custom Matmul":                     (True, custom_matmul, custom_matmul_data_generator, 2048),
+        "Compiled Custom Matmul":            (False, custom_matmul_compiled, custom_matmul_data_generator, 2048),
+        "Custom Symmetric Matmul":           (True, custom_symm, custom_symm_data_generator, 2048),
+        "Compiled Custom Symmetric Matmul":  (False, custom_symm_compiled, custom_symm_data_generator, 2048),
     }
 
     dims = [
-        (16, 16),
-        (256, 256),
-        (256, 1024),
-        (1024, 1024),
+        #(16, 16),
+        #(256, 256),
+        #(256, 1024),
+        #(1024, 1024),
         #(1024, 4096),
-        #(4096, 4096),
+        (4096, 4096),
         #(4096, 16384),
         #(8192, 32768),
     ]
