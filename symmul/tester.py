@@ -10,17 +10,17 @@ A = torch.ones((n, n), dtype=dtype, device=device)
 B = A.T.contiguous()
 C = torch.zeros((n, n), dtype=dtype, device=device)
 
-def benchmark(f, A, B, C):
+def benchmark(f, A, B, C, warmup=3):
     """Benchmark a matrix multiplication function f(A,B,C)"""
     torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
 
     # Warmup runs
-    f(A, B, C)
-    f(A, B, C) 
-    f(A, B, C)
-    C = C * 0
+    for _ in range(warmup):
+        f(A, B, C)
+        torch.cuda.synchronize() # Make sure previous run is done
+        C.zero_() # Zero out C without caching
 
     # Timed run
     start.record()
@@ -35,5 +35,5 @@ def benchmark(f, A, B, C):
 
     assert torch.allclose(C, A @ B)
 
-benchmark(symmul.symmul4096_4096, A, B, C)
-benchmark(symmul.matmul4096_4096, A, B, C)
+benchmark(symmul.matmul4096_4096, A, B, C, warmup=9)
+benchmark(symmul.symmul4096_4096, A, B, C, warmup=9)

@@ -45,12 +45,10 @@ struct symmul_template {
             return;
         }
         // Skip upper triangular blocks
-        /*
         if (args.common.coord.x > args.common.coord.y) {
             args.num_iters = -1;
             return;
         }
-        */
         args.num_iters = args.globals.A.cols/64;
         int id = warpgroup::groupid() == NUM_CONSUMER_WARPS/4 ? 0 : warpgroup::groupid(); // producer sets as 0
         args.common.coord = { args.common.coord.x*M_BLOCK + id, args.common.coord.y*N_BLOCK };
