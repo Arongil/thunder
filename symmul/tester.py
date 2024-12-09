@@ -43,14 +43,14 @@ def benchmark(f, A, B, C, warmup=3, plot=False):
     f(A, B, C)
     end.record()
 
-    if plot:
-        plot_correctness_heatmap(C)
-
     torch.cuda.synchronize()
     elapsed_time = start.elapsed_time(end)
     flops = 2 * A.shape[0] * A.shape[1] * B.shape[1]  # multiply-add is 2 operations
     tflops = (flops / (elapsed_time / 1000)) / 1e12  # convert ms to s and flops to tflops
     print(f"{f.__name__} execution time: {elapsed_time:.2f} ms ({tflops:.2f} TFLOPs/s)")
+
+    if plot:
+        plot_correctness_heatmap(C)
 
     assert torch.allclose(C, A @ B)
 
