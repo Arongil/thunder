@@ -11,15 +11,16 @@ struct symmul_layout {
     using  global_layout  = gl<bf16, 1, 1, -1, -1, base_tile>;
     struct globals        { global_layout A, B, C; };
     struct input_block    { base_tile a[M_BLOCK], b[N_BLOCK]; };  // outer product input
-    struct finish_block   { base_tile c[M_BLOCK][N_BLOCK]; };     // outer product result
+    struct finish_block   { base_tile c[M_BLOCK][N_BLOCK]; base_tile c_transposed[N_BLOCK][M_BLOCK]; };     // outer product result
     struct common_state   { int2 coord; };
-    struct consumer_state { rt_fl<16, N_BLOCK*base_tile::cols> accum; }; // register_tile of size 16 by N_BLOCK * however many columns we're doing
+    struct consumer_state { rt_fl<16, N_BLOCK*base_tile::cols> accum; rt_bf<16, N_BLOCK*base_tile::cols> accum_bf16; rt_bf<N_BLOCK*base_tile::cols, 16> accum_transposed; }; // register_tile of size 16 by N_BLOCK * however many columns we're doing
 };
 template<int _M_BLOCK=2, int _N_BLOCK=4, int _SUPER_M=12>
 struct symmul_template {
     static constexpr int M_BLOCK = _M_BLOCK, N_BLOCK = _N_BLOCK, SUPER_M = _SUPER_M;
     using layout    = symmul_layout<M_BLOCK, N_BLOCK>;
     using wide_tile = st_bf<64, 64*N_BLOCK>;  // 64 rows by 64*N_BLOCK columns
+    using tall_tile = st_bf<64*M_BLOCK, 64>;  // 64*M_BLOCK rows by 64 columns
     static constexpr int NUM_CONSUMER_WARPS=M_BLOCK*4, INPUT_PIPE_STAGES=4, PRODUCER_BARRIER_ARRIVALS=1;
     // Helper functions
     template<bool PERISISTENT_GRID=true> __host__ static inline dim3 grid(int M, int N) {
@@ -75,6 +76,7 @@ struct symmul_template {
         __device__ static void setup(consumer_setup_args<layout> args) {
             warpgroup::increase_registers<232>(); // increase registers for consumers
             zero(args.state.accum);
+            zero(args.state.accum_transposed);
         }
         __device__ static void compute(consumer_compute_args<layout> args) {
             warpgroup::mma_AB(
@@ -86,16 +88,36 @@ struct symmul_template {
             if(laneid() == 0) arrive(args.inputs_finished);
         }
         __device__ static void finish(consumer_finish_args<layout> args) {
+            // Store the lower triangular part
             warpgroup::store(reinterpret_cast<wide_tile&>(args.finish.c[warpgroup::groupid()]), args.state.accum);
             warpgroup::sync(warpgroup::groupid()+4);
             if(warpgroup::warpid() == 0) {
                 for(int i = 0; i < N_BLOCK; i++) {
+                    // store lower triangular part
                     tma::store_async(args.globals.C, args.finish.c[warpgroup::groupid()][i],
                                                 {args.common.coord.x, args.common.coord.y+i});
                     tma::store_async_read_wait(); // wait that store is finished before reusing finish memory
                 }
             }
+
+            // store the upper triangular part -- first convert to bf16 so that we can tranpose
+            kittens::copy(args.state.accum_bf16, args.state.accum);
+            kittens::transpose_sep(args.state.accum_transposed, args.state.accum_bf16);
+
+            //warpgroup::store(reinterpret_cast<wide_tile&>(args.finish.c_transposed[warpgroup::groupid()]), args.state.accum_transposed);
+            /*
+            warpgroup::sync(warpgroup::groupid()+4);
+            if(warpgroup::warpid() == 0) {
+                for(int i = 0; i < N_BLOCK; i++) {
+                    tma::store_async(args.globals.C, args.finish.c[warpgroup::groupid()][i],
+                                                {args.common.coord.y+i, args.common.coord.x});
+                    tma::store_async_read_wait(); // wait that store is finished before reusing finish memory
+                }
+            }
+            */
+
             zero(args.state.accum);
+            zero(args.state.accum_transposed);
             if(laneid() == 0) arrive(args.finish_finished);
         }
     };
