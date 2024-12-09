@@ -24,7 +24,7 @@ struct symmul_template {
     static constexpr int NUM_CONSUMER_WARPS=M_BLOCK*4, INPUT_PIPE_STAGES=4, PRODUCER_BARRIER_ARRIVALS=1;
     // Helper functions
     template<bool PERISISTENT_GRID=true> __host__ static inline dim3 grid(int M, int N) {
-        return dim3(PERISISTENT_GRID ? 4*132 : M*N/(M_BLOCK*N_BLOCK*layout::base_tile::num_elements));
+        return dim3(PERISISTENT_GRID ? 132 : M*N/(M_BLOCK*N_BLOCK*layout::base_tile::num_elements));
     }
       // ThunderKittens template functions
     __device__ static inline void common_setup(common_setup_args<layout> args) {
@@ -234,10 +234,10 @@ using smt = symmul_template<2,4,8>;
 using mmt_globals = typename mmt::layout::globals;
 using smt_globals = typename smt::layout::globals;
 
-void matmul4096_4096(mmt_globals g) {
-    const size_t N = 4096;
-    const size_t M = 4096;
-    const size_t K = 4096;
+void matmul(mmt_globals g) {
+    const size_t N = g.A.rows;
+    const size_t M = g.B.cols;
+    const size_t K = g.A.cols;
     dim3 grid(mmt::grid(M, N, K));
     dim3 block(prototype::detail::NUM_THREADS_v<mmt>);
 
@@ -254,51 +254,28 @@ void matmul4096_4096(mmt_globals g) {
     }
 }
 
-void symmul4096_4096(smt_globals g) {
-    const size_t N = 4096;
-    const size_t K = 4096;
-    dim3 grid(smt::grid(N, K));
+void symmul(smt_globals g) {
+    const size_t N = g.A.rows;
+    const size_t K = g.A.cols;
+    dim3 grid(smt::grid<false>(N, K));
     dim3 block(prototype::detail::NUM_THREADS_v<smt>);
 
-    // Create CUDA events for timing
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    
     // Set shared memory and launch kernel
     unsigned long mem_size = MAX_SHARED_MEMORY - 1024;
     cudaFuncSetAttribute(prototype::lcf::kernel<smt>, cudaFuncAttributeMaxDynamicSharedMemorySize, mem_size);
-    
-    cudaEventRecord(start);
     prototype::lcf::kernel<smt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(g);
     
-    // Check for timeout (5ms)
-    float elapsed = 0;
-    while (elapsed < 5.0f) {
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&elapsed, start, stop);
-        
-        // Check if kernel is still running
-        cudaError_t err = cudaGetLastError();
-        if (err == cudaSuccess) {
-            break;  // Kernel completed successfully
-        }
-    }
-    
-    // If we exceeded timeout, terminate the kernel
-    if (elapsed >= 5.0f) {
-        cudaDeviceReset();  // This will terminate all running kernels
-        throw std::runtime_error("Kernel timeout after 5ms - possible infinite loop detected");
-    }
 
-    // Cleanup events
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    // Check for kernel launch errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+        return;
+    }
 }
 
 PYBIND11_MODULE(symmul, m) {
     m.doc() = "ThunderKittens symmetric matmul module";
-    BIND_FUNCTION(m, "matmul4096_4096", matmul4096_4096, mmt_globals, A, B, C);
-    BIND_FUNCTION(m, "symmul4096_4096", symmul4096_4096, smt_globals, A, B, C);
+    BIND_FUNCTION(m, "matmul", matmul, mmt_globals, A, B, C);
+    BIND_FUNCTION(m, "symmul", symmul, smt_globals, A, B, C);
 }

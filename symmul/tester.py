@@ -6,7 +6,7 @@ import torch
 assert torch.cuda.is_available()
 device = "cuda"
 
-n = 4096
+n = 8192
 dtype = torch.bfloat16
 A = torch.ones((n, n), dtype=dtype, device=device)
 B = A.T.contiguous()
@@ -54,5 +54,5 @@ def benchmark(f, A, B, C, warmup=3, plot=False):
 
     assert torch.allclose(C, A @ B)
 
-benchmark(symmul.matmul4096_4096, A, B, C, warmup=9, plot=False)
-benchmark(symmul.symmul4096_4096, A, B, C, warmup=9, plot=True)
+benchmark(symmul.matmul, A, B, C, warmup=9, plot=False)
+benchmark(symmul.symmul, A, B, C, warmup=9, plot=True)
