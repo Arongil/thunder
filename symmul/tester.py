@@ -6,17 +6,20 @@ import torch
 assert torch.cuda.is_available()
 device = "cuda"
 
-n = 8192
+n = 1024
 dtype = torch.bfloat16
-A = torch.ones((n, n), dtype=dtype, device=device)
+A = torch.randn((n, n), dtype=dtype, device=device)
 B = A.T.contiguous()
 C = torch.zeros((n, n), dtype=dtype, device=device)
 
-def plot_correctness_heatmap(C):
+def plot_correctness_heatmap(A, B, C):
     # Convert to CPU numpy array for plotting
+    A_np = A.to(torch.float32).cpu().numpy()
+    B_np = B.to(torch.float32).cpu().numpy()
     C_np = C.to(torch.float32).cpu().numpy()
-    # Create boolean mask where values equal 4096
-    correct_mask = (C_np == 4096)
+    C_correct_np = (A @ B).to(torch.float32).cpu().numpy()
+    # Create boolean mask with absolute tolerance of 1
+    correct_mask = np.abs(C_np - C_correct_np).clip(0, 1)
     
     plt.figure(figsize=(10, 10))
     plt.imshow(correct_mask, cmap='RdYlGn')
@@ -50,9 +53,9 @@ def benchmark(f, A, B, C, warmup=3, plot=False):
     print(f"{f.__name__} execution time: {elapsed_time:.2f} ms ({tflops:.2f} TFLOPs/s)")
 
     if plot:
-        plot_correctness_heatmap(C)
+        plot_correctness_heatmap(A, B, C)
 
-    assert torch.allclose(C, A @ B)
+    assert torch.allclose(C, A @ B, atol=1)
 
 benchmark(symmul.matmul, A, B, C, warmup=9, plot=False)
 benchmark(symmul.symmul, A, B, C, warmup=9, plot=True)

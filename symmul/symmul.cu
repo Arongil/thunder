@@ -81,6 +81,8 @@ struct symmul_template {
         __device__ static void setup(consumer_setup_args<layout> args) {
             warpgroup::increase_registers<232>(); // increase registers for consumers
             zero(args.state.accum);
+            zero(args.state.accum_bf16);
+            zero(args.state.accum_transposed);
         }
         __device__ static void compute(consumer_compute_args<layout> args) {
             warpgroup::mma_AB(
@@ -120,6 +122,8 @@ struct symmul_template {
             }
 
             zero(args.state.accum);
+            zero(args.state.accum_bf16);
+            zero(args.state.accum_transposed);
             if(laneid() == 0) arrive(args.finish_finished);
         }
     };
@@ -257,7 +261,7 @@ void matmul(mmt_globals g) {
 void symmul(smt_globals g) {
     const size_t N = g.A.rows;
     const size_t K = g.A.cols;
-    dim3 grid(smt::grid<false>(N, K));
+    dim3 grid(smt::grid<true>(N, K));
     dim3 block(prototype::detail::NUM_THREADS_v<smt>);
 
     // Set shared memory and launch kernel
