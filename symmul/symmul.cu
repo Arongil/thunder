@@ -50,20 +50,13 @@ struct symmul_template {
         int id = warpgroup::groupid() == NUM_CONSUMER_WARPS/4 ? 0 : warpgroup::groupid(); // producer sets as 0
         args.common.coord = { args.common.coord.x*M_BLOCK + id, args.common.coord.y*N_BLOCK };
 
-        // Convert block coordinates to matrix coordinates
-        int block_start_row = args.common.coord.x * 64;
-        int block_start_col = args.common.coord.y * 64;
-        int block_end_row = block_start_row + 64;
-        int block_end_col = block_start_col + 64;
-
-        // Check if any part of this block overlaps with lower triangular region
-        // Block overlaps if end_row > start_col (at least one element below diagonal)
-        bool has_lower_triangular = block_end_row > block_start_col;
-
-        if (!has_lower_triangular) {
+        // Skip upper triangular blocks
+        /*
+        if (args.common.coord.x < args.common.coord.y) {
             args.num_iters = -1;
             return;
         }
+        */
     }
     struct producer {
         __device__ static void setup(producer_setup_args<layout> args) {
