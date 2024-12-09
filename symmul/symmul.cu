@@ -28,35 +28,36 @@ struct symmul_template {
     }
       // ThunderKittens template functions
     __device__ static inline void common_setup(common_setup_args<layout> args) {
-        int Rblocks = args.globals.C.rows / (M_BLOCK*64), Cblocks = args.globals.C.cols / (N_BLOCK*64);
-        int super_rows = (Rblocks/SUPER_M)*SUPER_M,
-            final_rows = Rblocks - super_rows,
-            super_repeat = SUPER_M*Cblocks;
-        int task_id = args.task_iter*gridDim.x + blockIdx.x;
-        if (task_id < super_rows * Cblocks)
-            args.common.coord = { SUPER_M*(task_id/super_repeat) + task_id%SUPER_M,
-                           (task_id%super_repeat)/SUPER_M };
-                           // ^ row, col ... of the block
-        else if (task_id < Rblocks*Cblocks) {
-            int remainder_id = task_id - super_rows*Cblocks;
-            args.common.coord = { super_rows + (remainder_id%final_rows), remainder_id/final_rows };
-        }
-        else { // Id is too high, no more work to do
-            args.num_iters = -1;
-            return;
-        }
+        bool is_upper_triangular = false;
+        do {
+            int Rblocks = args.globals.C.rows / (M_BLOCK*64), Cblocks = args.globals.C.cols / (N_BLOCK*64);
+            int super_rows = (Rblocks/SUPER_M)*SUPER_M,
+                final_rows = Rblocks - super_rows,
+                super_repeat = SUPER_M*Cblocks;
+            int task_id = args.task_iter*gridDim.x + blockIdx.x;
+            if (task_id < super_rows * Cblocks)
+                args.common.coord = { SUPER_M*(task_id/super_repeat) + task_id%SUPER_M,
+                            (task_id%super_repeat)/SUPER_M };
+                            // ^ row, col ... of the block
+            else if (task_id < Rblocks*Cblocks) {
+                int remainder_id = task_id - super_rows*Cblocks;
+                args.common.coord = { super_rows + (remainder_id%final_rows), remainder_id/final_rows };
+            }
+            else { // Id is too high, no more work to do
+                args.num_iters = -1;
+                return;
+            }
 
-        args.num_iters = args.globals.A.cols/64;
-        int id = warpgroup::groupid() == NUM_CONSUMER_WARPS/4 ? 0 : warpgroup::groupid(); // producer sets as 0
-        args.common.coord = { args.common.coord.x*M_BLOCK + id, args.common.coord.y*N_BLOCK };
+            args.num_iters = args.globals.A.cols/64;
+            int id = warpgroup::groupid() == NUM_CONSUMER_WARPS/4 ? 0 : warpgroup::groupid(); // producer sets as 0
+            args.common.coord = { args.common.coord.x*M_BLOCK + id, args.common.coord.y*N_BLOCK };
 
-        // Skip upper triangular blocks
-        /*
-        if (args.common.coord.x < args.common.coord.y) {
-            args.num_iters = -1;
-            return;
-        }
-        */
+            // If upper triangular, skip to the next block
+            is_upper_triangular = args.common.coord.x < args.common.coord.y;
+            if (is_upper_triangular) {
+                args.task_iter++;
+            }
+        } while (is_upper_triangular);
     }
     struct producer {
         __device__ static void setup(producer_setup_args<layout> args) {
@@ -99,7 +100,7 @@ struct symmul_template {
                 for(int i = 0; i < N_BLOCK; i++) {
                     // store lower triangular part
                     tma::store_async(args.globals.C, args.finish.c[warpgroup::groupid()][i],
-                                                {args.common.coord.x, args.common.coord.y+i});
+                                        {args.common.coord.x, args.common.coord.y+i});
                     tma::store_async_read_wait(); // wait that store is finished before reusing finish memory
                 }
             }
@@ -261,17 +262,41 @@ void symmul4096_4096(smt_globals g) {
     dim3 grid(smt::grid(N, K));
     dim3 block(prototype::detail::NUM_THREADS_v<smt>);
 
-    // Absolutely need to set the dynamic shared memory here!!!
+    // Create CUDA events for timing
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    
+    // Set shared memory and launch kernel
     unsigned long mem_size = MAX_SHARED_MEMORY - 1024;
     cudaFuncSetAttribute(prototype::lcf::kernel<smt>, cudaFuncAttributeMaxDynamicSharedMemorySize, mem_size);
+    
+    cudaEventRecord(start);
     prototype::lcf::kernel<smt><<<grid, block, MAX_SHARED_MEMORY-1024>>>(g);
-
-    // Check for kernel launch errors
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
-        return;
+    
+    // Check for timeout (5ms)
+    float elapsed = 0;
+    while (elapsed < 5.0f) {
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&elapsed, start, stop);
+        
+        // Check if kernel is still running
+        cudaError_t err = cudaGetLastError();
+        if (err == cudaSuccess) {
+            break;  // Kernel completed successfully
+        }
     }
+    
+    // If we exceeded timeout, terminate the kernel
+    if (elapsed >= 5.0f) {
+        cudaDeviceReset();  // This will terminate all running kernels
+        throw std::runtime_error("Kernel timeout after 5ms - possible infinite loop detected");
+    }
+
+    // Cleanup events
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 }
 
 PYBIND11_MODULE(symmul, m) {
