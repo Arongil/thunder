@@ -12,7 +12,7 @@ device = "cuda"
 
 n = 8192
 dtype = torch.bfloat16
-A = torch.randn((n, n), dtype=dtype, device=device)
+A = torch.ones((n, n), dtype=dtype, device=device)
 B = A.T.contiguous()
 C = torch.zeros((n, n), dtype=dtype, device=device)
 
