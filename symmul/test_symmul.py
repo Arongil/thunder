@@ -1,3 +1,7 @@
+"""
+Benchmark our symmul kernel. Currently works on all ones data.
+"""
+
 import symmul
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,7 +10,7 @@ import torch
 assert torch.cuda.is_available()
 device = "cuda"
 
-n = 1024
+n = 8192
 dtype = torch.bfloat16
 A = torch.randn((n, n), dtype=dtype, device=device)
 B = A.T.contiguous()
